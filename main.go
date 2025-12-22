@@ -55,6 +55,7 @@ type Controller struct {
 }
 
 func main() {
+	log.SetFlags(log.Lshortfile)
 	cfg, err := loadConfig()
 	if err != nil {
 		log.Fatal(err)
