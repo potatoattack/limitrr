@@ -75,7 +75,7 @@ Install the webhook plugin and create the webhook.
 Destination settings:
 
 - Name: limitrr
-- URL: http://<limitrr-host>:8089/webhook
+- URL: http://\<limitrr-host\>:8089/webhook
 
 Enable notification types:
 
@@ -85,7 +85,7 @@ Enable notification types:
 Add Request Header:
 
 - Key: X-Webhook-Key
-- Value: <WEBHOOK_KEY>
+- Value: \<WEBHOOK_KEY\>
 
 ### Body template
 
