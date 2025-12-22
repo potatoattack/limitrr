@@ -1,0 +1,15 @@
+[Unit]
+Description=Limit download speed when remote users are watching jellyfin
+After=qbittorrent-nox.service
+Requires=qbittorrent-nox.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/limitrr.env
+ExecStart=/usr/local/bin/limitrr
+Restart=on-failure
+User=qbt
+Group=qbt
+
+[Install]
+WantedBy=multi-user.target
