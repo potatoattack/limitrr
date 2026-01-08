@@ -1,7 +1,6 @@
-
 # limitrr
 
-> Note: this was vibe-coded with ChatGPT 5.2 as a one-shot. Surprisingly, it works.
+> Note: this is mostly vibe-coded.
 
 A tiny Go service that throttles qBittorrent when remote users are streaming from Jellyfin.
 
@@ -33,16 +32,17 @@ Remote is defined as any IP not in LOCAL_CIDRS.
 
 ## Configuration (env vars)
 
-| Variable | Required | Default | Notes |
-|---|---:|---:|---|
-| LISTEN_ADDR | no | :8089 | HTTP listen address |
-| WEBHOOK_KEY | yes | - | Shared secret; sent as X-Webhook-Key |
-| QBT_BASE_URL | yes | - | e.g. <http://qbittorrent:8080> |
-| QBT_USER | no | - | If qBittorrent requires auth |
-| QBT_PASS | no | - | If qBittorrent requires auth |
-| QBT_MODE | no | alt | alt (turtle mode) or global |
-| QBT_GLOBAL_LIMIT_BPS | no | 5000000 | bytes/sec, only used in global |
-| LOCAL_CIDRS | no | common private ranges | Comma-separated CIDRs treated as “local” |
+| Variable             | Required |               Default | Notes                                    |
+| -------------------- | -------: | --------------------: | ---------------------------------------- |
+| LISTEN_ADDR          |       no |                 :8089 | HTTP listen address                      |
+| WEBHOOK_KEY          |      yes |                     - | Shared secret; sent as X-Webhook-Key     |
+| LOG_LEVEL            |       no |                  INFO | Log level (DEBUG, INFO, WARN, ERROR)     |
+| QBT_BASE_URL         |      yes |                     - | e.g. <http://qbittorrent:8080>           |
+| QBT_USER             |       no |                     - | If qBittorrent requires auth             |
+| QBT_PASS             |       no |                     - | If qBittorrent requires auth             |
+| QBT_MODE             |       no |                   alt | alt (turtle mode) or global              |
+| QBT_GLOBAL_LIMIT_BPS |       no |               5000000 | bytes/sec, only used in global           |
+| LOCAL_CIDRS          |       no | common private ranges | Comma-separated CIDRs treated as “local” |
 
 Default LOCAL_CIDRS includes:
 

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -22,6 +22,7 @@ import (
 type Config struct {
 	ListenAddr string
 	WebhookKey string // shared secret header
+	LogLevel   string // DEBUG, INFO, WARN, ERROR
 
 	// qBittorrent
 	QBTBaseURL  string
@@ -55,15 +56,18 @@ type Controller struct {
 }
 
 func main() {
-	log.SetFlags(log.Lshortfile)
 	cfg, err := loadConfig()
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		os.Exit(1)
 	}
+
+	setupLogger(cfg.LogLevel)
 
 	ctrl, err := NewController(cfg)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("failed to initialize controller", "error", err)
+		os.Exit(1)
 	}
 
 	mux := http.NewServeMux()
@@ -76,8 +80,30 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("listening on %s", cfg.ListenAddr)
-	log.Fatal(srv.ListenAndServe())
+	slog.Info("server starting", "addr", cfg.ListenAddr, "log_level", cfg.LogLevel)
+	if err := srv.ListenAndServe(); err != nil {
+		slog.Error("server failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func setupLogger(levelStr string) {
+	var level slog.Level
+	switch strings.ToUpper(levelStr) {
+	case "DEBUG":
+		level = slog.LevelDebug
+	case "WARN":
+		level = slog.LevelWarn
+	case "ERROR":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+	}))
+	slog.SetDefault(logger)
 }
 
 func loadConfig() (Config, error) {
@@ -91,6 +117,7 @@ func loadConfig() (Config, error) {
 	cfg := Config{
 		ListenAddr: get("LISTEN_ADDR", ":8089"),
 		WebhookKey: get("WEBHOOK_KEY", ""),
+		LogLevel:   get("LOG_LEVEL", "INFO"),
 
 		QBTBaseURL:  get("QBT_BASE_URL", ""),
 		QBTUser:     get("QBT_USER", ""),
@@ -137,7 +164,6 @@ func NewController(cfg Config) (*Controller, error) {
 	}
 
 	// Jellyfin client is optional here, but wired in for later extensions.
-	// jellyfin-go expects DefaultHeader Authorization: MediaBrowser Token="<API_TOKEN>" :contentReference[oaicite:4]{index=4}
 	jcfg := &jellyfin.Configuration{
 		Servers:       jellyfin.ServerConfigurations{{URL: "http://unused"}},
 		DefaultHeader: map[string]string{},
@@ -154,17 +180,32 @@ func NewController(cfg Config) (*Controller, error) {
 }
 
 func (c *Controller) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	// Access logging
+	slog.Info("webhook request received",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"remote_addr", r.RemoteAddr,
+	)
+
 	if r.Method != http.MethodPost {
+		slog.Warn("method not allowed", "method", r.Method)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if r.Header.Get("X-Webhook-Key") != c.cfg.WebhookKey {
+
+	gotKey := r.Header.Get("X-Webhook-Key")
+	if gotKey != c.cfg.WebhookKey {
+		slog.Warn("unauthorized webhook attempt",
+			"key_len_received", len(gotKey),
+			"remote_addr", r.RemoteAddr,
+		)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
 	var ev WebhookEvent
 	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+		slog.Error("json decode failed", "error", err)
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte("bad json"))
 		return
@@ -173,24 +214,37 @@ func (c *Controller) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	isRemote := c.isRemoteClient(ev.RemoteEndPt)
 	key := c.eventKey(ev)
 
+	slog.Info("processing event",
+		"event_type", ev.Event,
+		"user", ev.Username,
+		"remote_endpoint", ev.RemoteEndPt,
+		"is_remote", isRemote,
+		"session_key", key,
+	)
+
 	c.mu.Lock()
 	switch strings.ToLower(ev.Event) {
 	case "playbackstart":
 		if isRemote {
 			c.activeRemote[key] = ev
+			slog.Info("session tracked", "key", key, "total_active_remote", len(c.activeRemote))
+		} else {
+			slog.Debug("ignoring local playback", "key", key)
 		}
 	case "playbackstop":
-		delete(c.activeRemote, key)
+		if _, ok := c.activeRemote[key]; ok {
+			delete(c.activeRemote, key)
+			slog.Info("session untracked", "key", key, "total_active_remote", len(c.activeRemote))
+		}
 	default:
-		// Ignore other events
+		slog.Debug("ignoring unrelated event", "event_type", ev.Event)
 	}
 	remoteCount := len(c.activeRemote)
 	c.mu.Unlock()
 
-	// Reconcile throttling
 	shouldThrottle := remoteCount > 0
 	if err := c.applyThrottle(shouldThrottle); err != nil {
-		log.Printf("applyThrottle=%v failed: %v", shouldThrottle, err)
+		slog.Error("failed to apply throttle", "error", err, "target_throttle", shouldThrottle)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -241,6 +295,8 @@ func (c *Controller) applyThrottle(throttle bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	start := time.Now()
+
 	switch strings.ToLower(c.cfg.QBTMode) {
 	case "alt":
 		// Recommended: configure qBittorrent's Alternative Speed Limits in the UI,
@@ -267,7 +323,11 @@ func (c *Controller) applyThrottle(throttle bool) error {
 	c.lastThrottled = &throttle
 	c.mu.Unlock()
 
-	log.Printf("throttle=%v applied (mode=%s)", throttle, c.cfg.QBTMode)
+	slog.Info("throttle state changed",
+		"throttle", throttle,
+		"mode", c.cfg.QBTMode,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return nil
 }
 
